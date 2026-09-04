@@ -1022,11 +1022,11 @@ _CONFIGS = [
             action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
         ema_decay=None,
-        batch_size=16,
-        num_train_steps=30_000,
+        batch_size=32,
+        num_train_steps=10_000,
         log_interval=100,
-        save_interval=5000,
-        keep_period=5_000,
+        save_interval=2000,
+        keep_period=2_000,
     ),
     #
     # Debugging configs.

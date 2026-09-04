@@ -8,6 +8,13 @@
 docker compose -f scripts/docker/compose.yml up --build
 ```
 
+```bash
+docker compose -f scripts/docker/compose.yml build \
+    --build-arg GITHUB_PROXY_PREFIX=https://ghfast.top/ \
+    --progress=plain \
+    openpi_server
+```
+
 ## 模型下载
 
 下载 base 模型到本地
@@ -27,7 +34,7 @@ print(maybe_download("gs://openpi-assets/checkpoints/pi05_base"))
 全量微调：
 
 ```bash
-docker exec -it openpi_server bash -c "
+docker exec -it docker-openpi_server-1 bash -c "
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train_piper.py \
     --config pi05_piper_full_finetune \
     --dataset-dir /path/to/lerobot/dataset \
@@ -45,7 +52,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train_piper.py \
 LoRA 微调：
 
 ```bash
-docker exec -it openpi_server bash -c "
+docker exec -it docker-openpi_server-1 bash -c "
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train_piper.py \
     --config pi05_piper_lora_finetune \
     --dataset-dir /path/to/lerobot/dataset \
@@ -60,7 +67,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train_piper.py \
 恢复/覆盖 训练:
 
 ```bash
-docker exec -it openpi_server bash -c "
+docker exec -it docker-openpi_server-1 bash -c "
 uv run scripts/train_piper.py \
     --config pi05_piper_lora_finetune \
     --dataset-dir /path/to/lerobot/dataset \
