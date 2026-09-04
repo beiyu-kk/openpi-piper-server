@@ -22,17 +22,36 @@ ENV UV_LINK_MODE=copy
 # leak out of the container when we mount the application code.
 ENV UV_PROJECT_ENVIRONMENT=/.venv
 
-# Install the project's dependencies using the lockfile and settings
-# 在 RUN uv venv 之前添加
-ENV UV_PYTHON_INSTALL_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/github-release/indygreg/python-build-standalone/
+# Install the project's dependencies using the lockfile and settings.
+# This mirror contains the exact python-build-standalone artifacts requested
+# by uv and avoids GitHub release download timeouts on mainland networks.
+ENV UV_PYTHON_INSTALL_MIRROR=https://registry.npmmirror.com/-/binary/python-build-standalone
+ENV UV_HTTP_TIMEOUT=120
 
 RUN uv venv --python 3.11.9 $UV_PROJECT_ENVIRONMENT
+
+# Some networks terminate GitHub's HTTP/2 connections during long fetches.
+# GITHUB_PROXY_PREFIX can be set to a trusted proxy prefix such as
+# "https://example-proxy/"; it is prepended to every https://github.com/ URL.
+ARG GITHUB_PROXY_PREFIX=
+RUN git config --global http.version HTTP/1.1 && \
+    if [ -n "$GITHUB_PROXY_PREFIX" ]; then \
+        git config --global \
+            url."${GITHUB_PROXY_PREFIX}https://github.com/".insteadOf \
+            "https://github.com/"; \
+    fi
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=packages/openpi-client/pyproject.toml,target=packages/openpi-client/pyproject.toml \
     --mount=type=bind,source=packages/openpi-client/src,target=packages/openpi-client/src \
-    GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen --no-install-project --no-dev
+    for attempt in 1 2 3; do \
+        GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen --no-install-project --no-dev && exit 0; \
+        echo "uv sync failed (attempt ${attempt}/3); retrying in 5 seconds"; \
+        sleep 5; \
+    done; \
+    exit 1
 
 # Copy transformers_replace files while preserving directory structure
 COPY src/openpi/models_pytorch/transformers_replace/ /tmp/transformers_replace/

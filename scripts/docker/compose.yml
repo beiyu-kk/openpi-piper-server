@@ -6,6 +6,8 @@ services:
     build:
       context: ../..
       dockerfile: scripts/docker/serve_policy.Dockerfile
+      args:
+        GITHUB_PROXY_PREFIX: ${GITHUB_PROXY_PREFIX:-}
     init: true
     tty: true
     network_mode: host
