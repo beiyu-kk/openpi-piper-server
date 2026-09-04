@@ -61,6 +61,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=packages/openpi-client/src,target=packages/openpi-client/src \
     GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen --no-install-project --no-dev
 
+# TorchCodec dynamically loads FFmpeg when LeRobot decodes dataset videos.
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Validate native image and video dependencies while building the image.
+RUN /.venv/bin/python -c "import cv2; from torchcodec.decoders import VideoDecoder; print('OpenCV and TorchCodec imports passed')"
+
 # Copy transformers_replace files while preserving directory structure
 COPY src/openpi/models_pytorch/transformers_replace/ /tmp/transformers_replace/
 RUN /.venv/bin/python -c "import transformers; print(transformers.__file__)" | xargs dirname | xargs -I{} cp -r /tmp/transformers_replace/* {} && rm -rf /tmp/transformers_replace
