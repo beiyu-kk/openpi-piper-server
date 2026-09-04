@@ -1,0 +1,133 @@
+"""Reusable entry point for pi0.5 fine-tuning on a local Piper LeRobot dataset."""
+
+import argparse
+import dataclasses
+import logging
+import pathlib
+
+from openpi.training import config as _config
+from openpi.training import weight_loaders
+
+if __package__:
+    from scripts import compute_norm_stats
+    from scripts import train
+else:
+    import compute_norm_stats
+    import train
+
+
+CONFIGS = ("pi05_piper_full_finetune", "pi05_piper_lora_finetune")
+DEFAULT_BASE_MODEL = "gs://openpi-assets/checkpoints/pi05_base"
+
+
+def _resolve_base_params_path(value: str) -> str:
+    value = value.rstrip("/")
+    if "://" in value:
+        return value if value.endswith("/params") else f"{value}/params"
+
+    model_path = pathlib.Path(value).expanduser().resolve()
+    params_path = model_path if model_path.name == "params" else model_path / "params"
+    if not params_path.exists():
+        raise FileNotFoundError(f"Base model params not found: {params_path}")
+    return str(params_path)
+
+
+def _validate_dataset_dir(value: str) -> pathlib.Path:
+    dataset_dir = pathlib.Path(value).expanduser().resolve()
+    required_paths = (dataset_dir / "meta" / "info.json", dataset_dir / "data")
+    missing = [str(path) for path in required_paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"Invalid LeRobot dataset directory; missing: {', '.join(missing)}")
+    return dataset_dir
+
+
+def _build_config(args: argparse.Namespace) -> _config.TrainConfig:
+    dataset_dir = _validate_dataset_dir(args.dataset_dir)
+    norm_stats_dir = pathlib.Path(args.norm_stats_dir).expanduser().resolve() if args.norm_stats_dir else dataset_dir
+    base_config = _config.get_config(args.config)
+    repo_id = args.dataset_repo_id
+
+    data = dataclasses.replace(
+        base_config.data,
+        repo_id=repo_id,
+        dataset_root=str(dataset_dir),
+        norm_stats_dir=str(norm_stats_dir),
+        assets=_config.AssetsConfig(asset_id=repo_id),
+    )
+    updates = {
+        "data": data,
+        "weight_loader": weight_loaders.CheckpointWeightLoader(_resolve_base_params_path(args.base_model_dir)),
+        "checkpoint_base_dir": args.checkpoint_base_dir,
+        "checkpoint_dir_override": args.checkpoint_dir,
+        "exp_name": args.exp_name,
+        "overwrite": args.overwrite,
+        "resume": args.resume,
+    }
+    for arg_name in ("batch_size", "num_workers", "num_train_steps", "fsdp_devices"):
+        if (value := getattr(args, arg_name)) is not None:
+            updates[arg_name] = value
+    if args.wandb_enabled is not None:
+        updates["wandb_enabled"] = args.wandb_enabled
+    return dataclasses.replace(base_config, **updates)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", choices=CONFIGS, default=CONFIGS[0])
+    parser.add_argument("--dataset-dir", required=True, help="Root directory of the local LeRobot dataset.")
+    parser.add_argument("--dataset-repo-id", required=True, help="Logical ID used for dataset assets in checkpoints.")
+    parser.add_argument(
+        "--base-model-dir",
+        default=DEFAULT_BASE_MODEL,
+        help="pi0.5 checkpoint root or its params directory; local paths and gs:// URLs are supported.",
+    )
+    parser.add_argument("--checkpoint-base-dir", default="./checkpoints")
+    parser.add_argument("--checkpoint-dir", help="Exact checkpoint output directory; overrides --checkpoint-base-dir.")
+    parser.add_argument("--norm-stats-dir", help="Directory containing norm_stats.json; defaults to --dataset-dir.")
+    parser.add_argument(
+        "--compute-norm-stats",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Compute missing stats, or reuse them when norm_stats.json already exists.",
+    )
+    parser.add_argument("--max-norm-frames", type=int)
+    parser.add_argument("--exp-name", required=True)
+    parser.add_argument("--batch-size", type=int, default=None, help="Defaults to 32 from the Piper configs.")
+    parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--num-train-steps", type=int)
+    parser.add_argument("--fsdp-devices", type=int)
+    parser.add_argument("--wandb-enabled", action=argparse.BooleanOptionalAction, default=None)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--overwrite", action="store_true")
+    mode.add_argument("--resume", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    args = _parse_args()
+    config = _build_config(args)
+    data_config = config.data.create(config.assets_dirs, config.model)
+    norm_stats_dir = compute_norm_stats.get_norm_stats_dir(config, data_config)
+    norm_stats_path = norm_stats_dir / "norm_stats.json"
+
+    if norm_stats_path.exists():
+        logging.info("Reusing normalization stats: %s", norm_stats_path)
+    elif args.compute_norm_stats:
+        logging.info("Normalization stats not found; computing: %s", norm_stats_path)
+        compute_norm_stats.compute(config, max_frames=args.max_norm_frames)
+    else:
+        raise FileNotFoundError(
+            f"Normalization stats not found: {norm_stats_path}. "
+            "Run again with --compute-norm-stats to generate them automatically."
+        )
+
+    logging.info("Dataset: %s", data_config.dataset_root)
+    logging.info("Base model params: %s", config.weight_loader.params_path)
+    logging.info("Checkpoint output: %s", config.checkpoint_dir)
+    logging.info("Fine-tuning config: %s (batch size %d)", config.name, config.batch_size)
+    train.main(config)
+
+
+if __name__ == "__main__":
+    main()

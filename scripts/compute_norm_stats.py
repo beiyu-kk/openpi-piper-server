@@ -5,6 +5,8 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import pathlib
+
 import numpy as np
 import tqdm
 import tyro
@@ -86,8 +88,17 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
-    config = _config.get_config(config_name)
+def get_norm_stats_dir(config: _config.TrainConfig, data_config: _config.DataConfig) -> pathlib.Path:
+    if config.data.norm_stats_dir is not None:
+        return pathlib.Path(config.data.norm_stats_dir).expanduser().resolve()
+    if data_config.repo_id is None:
+        raise ValueError("Data config must have a repo_id")
+    return config.assets_dirs / data_config.repo_id
+
+
+def compute(config: _config.TrainConfig, max_frames: int | None = None) -> pathlib.Path:
+    if max_frames is not None and max_frames < config.batch_size:
+        raise ValueError(f"max_frames ({max_frames}) must be at least the batch size ({config.batch_size})")
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -108,9 +119,14 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    output_path = get_norm_stats_dir(config, data_config)
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
+    return output_path
+
+
+def main(config_name: str, max_frames: int | None = None):
+    compute(_config.get_config(config_name), max_frames)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import os
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
+from datasets.features import features as hf_features
 import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
@@ -17,6 +18,13 @@ from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
+
+
+def _ensure_hf_list_feature_compatibility() -> None:
+    """Allow datasets 3.x to read parquet metadata emitted by datasets 4.x."""
+    feature_types = getattr(hf_features, "_FEATURE_TYPES", None)
+    if feature_types is not None and "List" not in feature_types:
+        feature_types["List"] = hf_features.Sequence
 
 
 class Dataset(Protocol[T_co]):
@@ -137,9 +145,11 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    _ensure_hf_list_feature_compatibility()
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=data_config.dataset_root)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        root=data_config.dataset_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },

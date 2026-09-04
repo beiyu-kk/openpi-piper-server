@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.piper_policy as piper_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -65,6 +66,8 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional root of a local LeRobot dataset. If unset, LeRobot resolves repo_id from its cache or the Hub.
+    dataset_root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -167,6 +170,10 @@ class ModelTransformFactory(GroupFactory):
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
+    # Optional root of a local LeRobot dataset.
+    dataset_root: str | None = None
+    # Exact directory containing norm_stats.json. If set, this takes precedence over assets.
+    norm_stats_dir: str | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -182,6 +189,7 @@ class DataConfigFactory(abc.ABC):
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            dataset_root=self.dataset_root,
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
@@ -191,7 +199,7 @@ class DataConfigFactory(abc.ABC):
         if asset_id is None:
             return None
         try:
-            data_assets_dir = str(assets_dir / asset_id)
+            data_assets_dir = self.norm_stats_dir or str(assets_dir / asset_id)
             norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
             logging.info(f"Loaded norm stats from {data_assets_dir}")
             return norm_stats
@@ -356,6 +364,48 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotPiperDataConfig(DataConfigFactory):
+    """Data transforms for the single-arm Piper LeRobot dataset."""
+
+    use_delta_actions: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/top_image": "observation.images.top_head",
+                        "observation/right_wrist_image": "observation.images.hand_right",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[piper_policy.PiperInputs(model_type=model_config.model_type)],
+            outputs=[piper_policy.PiperOutputs()],
+        )
+        if self.use_delta_actions:
+            # All seven Piper dimensions are relative, including the continuous gripper dimension.
+            delta_action_mask = _transforms.make_bool_mask(7)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
+            action_sequence_keys=("action",),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -499,6 +549,8 @@ class TrainConfig:
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.
     checkpoint_base_dir: str = "./checkpoints"
+    # Exact checkpoint output directory. If set, this takes precedence over checkpoint_base_dir/name/exp_name.
+    checkpoint_dir_override: str | None = None
 
     # Random seed that will be used by random generators during training.
     seed: int = 42
@@ -544,6 +596,8 @@ class TrainConfig:
         """Get the checkpoint directory for this config."""
         if not self.exp_name:
             raise ValueError("--exp_name must be set")
+        if self.checkpoint_dir_override is not None:
+            return pathlib.Path(self.checkpoint_dir_override).resolve()
         return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
 
     @property
@@ -929,6 +983,43 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # Fine-tuning Piper configs.
+    #
+    TrainConfig(
+        name="pi05_piper_full_finetune",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+        data=LeRobotPiperDataConfig(
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=32,
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_piper_lora_finetune",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotPiperDataConfig(
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=30_000,
     ),
     #
     # Debugging configs.
