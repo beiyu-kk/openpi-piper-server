@@ -42,8 +42,8 @@ print(maybe_download("gs://openpi-assets/checkpoints/pi05_base"))
 ```bash
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train_piper.py \
     --config pi05_piper_full_finetune \
-    --dataset-dir /media/ubun/16T/Dataset/piper_data/recognize_book_color_lerobot_v2.1 \
-    --dataset-repo-id recognize_book_color \
+    --dataset-dir /media/ubun/16T/Dataset/piper_data/recognize_book_label_color_lerobot_v2.1 \
+    --dataset-repo-id recognize_book_label_color \
     --base-model-dir /media/ubun/16T/checkpoints/openpi/openpi-assets/checkpoints/pi05_base/params \
     --checkpoint-dir /media/ubun/16T/checkpoints/openpi/piper_book_color \
     --exp-name piper_full_book_color  \
@@ -59,11 +59,11 @@ LoRA 微调：
 ```bash
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train_piper.py \
     --config pi05_piper_lora_finetune \
-    --dataset-dir /media/ubun/16T/Dataset/piper_data/recognize_book_color_lerobot_v2.1 \
-    --dataset-repo-id recognize_book_color \
+    --dataset-dir /media/ubun/16T/Dataset/piper_data/recognize_book_label_color_lerobot_v2.1 \
+    --dataset-repo-id recognize_book_label_color \
     --base-model-dir /media/ubun/16T/checkpoints/openpi/openpi-assets/checkpoints/pi05_base/params \
-    --checkpoint-dir /media/ubun/16T/checkpoints/openpi/piper_book_color \
-    --exp-name piper_lora_book_color  \
+    --checkpoint-dir /media/ubun/16T/checkpoints/openpi/piper_book_label_color \
+    --exp-name piper_lora_book_label_color  \
     --compute-norm-stats \
     --overwrite
 ```

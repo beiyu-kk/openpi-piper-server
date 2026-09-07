@@ -1,6 +1,7 @@
 import dataclasses
 import enum
 import logging
+import pathlib
 import socket
 
 import tyro
@@ -8,6 +9,7 @@ import tyro
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
+from openpi.shared import download as _download
 from openpi.training import config as _config
 
 
@@ -28,6 +30,8 @@ class Checkpoint:
     config: str
     # Checkpoint directory (e.g., "checkpoints/pi0_aloha_sim/exp/10000").
     dir: str
+    # Normalization asset id. If omitted, it is inferred when the checkpoint contains exactly one set of stats.
+    asset_id: str | None = None
 
 
 @dataclasses.dataclass
@@ -85,12 +89,51 @@ def create_default_policy(env: EnvMode, *, default_prompt: str | None = None) ->
     raise ValueError(f"Unsupported environment mode: {env}")
 
 
+def _configured_asset_id(train_config: _config.TrainConfig) -> str | None:
+    if train_config.data.assets.asset_id is not None:
+        return train_config.data.assets.asset_id
+    if train_config.data.repo_id is not tyro.MISSING:
+        return train_config.data.repo_id
+    return None
+
+
+def _prepare_checkpoint(checkpoint: Checkpoint) -> tuple[_config.TrainConfig, pathlib.Path]:
+    train_config = _config.get_config(checkpoint.config)
+    checkpoint_dir = _download.maybe_download(checkpoint.dir)
+    asset_id = checkpoint.asset_id or _configured_asset_id(train_config)
+
+    if asset_id is None:
+        assets_dir = checkpoint_dir / "assets"
+        asset_ids = sorted(
+            {path.parent.relative_to(assets_dir).as_posix() for path in assets_dir.rglob("norm_stats.json")}
+        )
+        if not asset_ids:
+            raise FileNotFoundError(
+                f"No normalization statistics found under {assets_dir}. "
+                "Expected a file at assets/<asset_id>/norm_stats.json."
+            )
+        if len(asset_ids) > 1:
+            raise ValueError(
+                f"Multiple normalization asset ids found under {assets_dir}: {asset_ids}. "
+                "Select one with --policy.asset-id."
+            )
+        asset_id = asset_ids[0]
+        logging.info("Auto-detected normalization asset id: %s", asset_id)
+
+    data_config = dataclasses.replace(
+        train_config.data,
+        assets=dataclasses.replace(train_config.data.assets, asset_id=asset_id),
+    )
+    return dataclasses.replace(train_config, data=data_config), checkpoint_dir
+
+
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
         case Checkpoint():
+            train_config, checkpoint_dir = _prepare_checkpoint(args.policy)
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                train_config, checkpoint_dir, default_prompt=args.default_prompt
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)
